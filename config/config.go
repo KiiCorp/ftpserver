@@ -2,10 +2,14 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"time"
 
 	log "github.com/fclairamb/go-log"
 	"github.com/tidwall/sjson"
@@ -23,6 +27,12 @@ type Config struct {
 	fileName string
 	logger   log.Logger
 	Content  *confpar.Content
+
+	dynamicContentS3Bucket  string
+	dynamicContentS3Region  string
+	dynamicContentS3Root    string
+	dynamicContentAuthUrl   string
+	dynamicContentTenantUrl string
 }
 
 // NewConfig creates a new config instance
@@ -39,7 +49,13 @@ func NewConfig(fileName string, logger log.Logger) (*Config, error) {
 	if err := config.Load(); err != nil {
 		return nil, err
 	}
-
+	config.dynamicContentS3Bucket = os.Getenv("DYNAMIC_CONTENT_S3_BUCKET")
+	config.dynamicContentS3Region = os.Getenv("DYNAMIC_CONTENT_S3_REGION")
+	config.dynamicContentS3Root = os.Getenv("DYNAMIC_CONTENT_S3_ROOT")
+	if config.dynamicContentS3Root == "" {
+		config.dynamicContentS3Root = "root"
+	}
+	config.dynamicContentAuthUrl = os.Getenv("DYNAMIC_CONTENT_AUTH_URL")
 	return config, nil
 }
 
@@ -176,6 +192,100 @@ func (c *Config) GetAccess(user string, pass string) (*confpar.Access, error) {
 			}
 		}
 	}
+	if c.isDynamicContentEnabled() {
+		return c.getDynamicAccess(user, pass)
+	}
 
 	return nil, ErrUnknownUser
+}
+
+func (c *Config) getDynamicAccess(user string, password string) (*confpar.Access, error) {
+	tenant, err := c.authTenant(user, password)
+	if err != nil {
+		return nil, err
+	}
+	return &confpar.Access{
+		User: user,
+		Pass: password,
+		Fs:   "s3",
+		Params: map[string]string{
+			"region":    c.dynamicContentS3Region,
+			"bucket":    c.dynamicContentS3Bucket,
+			"base_path": fmt.Sprintf("%s/%s/", c.dynamicContentS3Root, tenant),
+		},
+	}, nil
+	return nil, ErrUnknownUser
+}
+
+func (c *Config) authTenant(user string, password string) (int64, error) {
+	// obtain the tenant id from the token
+	accessToken, err := c.authUserToAccessToken(user, password)
+	if err != nil {
+		return 0, err
+	}
+	tenant, err := c.authAccessTokenToTenant(accessToken)
+	if err != nil {
+		return 0, err
+	} else {
+		return tenant, nil
+	}
+}
+
+func (c *Config) authAccessTokenToTenant(token string) (int64, error) {
+	return 0, nil
+}
+
+func (c *Config) authUserToAccessToken(user string, password string) (string, error) {
+	type tokenRequest struct {
+		GrantType string `json:"grant_type"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+	}
+
+	type tokenResponse struct {
+		AccessToken string `json:"access_token"`
+	}
+
+	if user == "" || password == "" {
+		return "", ErrUnknownUser
+	}
+	tokenRequestPayload := tokenRequest{
+		GrantType: "password",
+		Username:  user,
+		Password:  password,
+	}
+	marshalled, err := json.Marshal(tokenRequestPayload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", c.dynamicContentAuthUrl, bytes.NewReader(marshalled))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	client := http.Client{Timeout: 10 * time.Second}
+	// send the request
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	// we do not forget to close the body to free resources
+	// defer will execute that at the end of the current function
+	defer res.Body.Close()
+	resBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	tokenResponsePayload := tokenResponse{}
+	json.Unmarshal(resBody, &tokenResponsePayload)
+	if tokenResponsePayload.AccessToken == "" {
+		return "", ErrUnknownUser
+	}
+	return tokenResponsePayload.AccessToken, nil
+}
+
+func (c *Config) isDynamicContentEnabled() bool {
+	return c.dynamicContentAuthUrl != "" && c.dynamicContentS3Bucket != ""
 }
