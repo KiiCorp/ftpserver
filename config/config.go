@@ -29,7 +29,6 @@ type Config struct {
 	Content  *confpar.Content
 
 	dynamicContentS3Bucket  string
-	dynamicContentS3Region  string
 	dynamicContentS3Root    string
 	dynamicContentAuthUrl   string
 	dynamicContentTenantUrl string
@@ -50,7 +49,6 @@ func NewConfig(fileName string, logger log.Logger) (*Config, error) {
 		return nil, err
 	}
 	config.dynamicContentS3Bucket = os.Getenv("DYNAMIC_CONTENT_S3_BUCKET")
-	config.dynamicContentS3Region = os.Getenv("DYNAMIC_CONTENT_S3_REGION")
 	config.dynamicContentS3Root = os.Getenv("DYNAMIC_CONTENT_S3_ROOT")
 	if config.dynamicContentS3Root == "" {
 		config.dynamicContentS3Root = "root"
@@ -209,7 +207,6 @@ func (c *Config) getDynamicAccess(user string, password string) (*confpar.Access
 		Pass: password,
 		Fs:   "s3",
 		Params: map[string]string{
-			"region":    c.dynamicContentS3Region,
 			"bucket":    c.dynamicContentS3Bucket,
 			"base_path": fmt.Sprintf("%s/%s/", c.dynamicContentS3Root, tenant),
 		},
